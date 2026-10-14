@@ -1,0 +1,133 @@
+# =============================================================================
+# LifeOps — Render Blueprint
+#
+# Topology (chosen after auditing how the BFF reaches the MCP server):
+#   - lifeops-mcp  : PRIVATE service. The MCP server (Streamable HTTP, 7 tools,
+#                    protocol 2025-11-25). Not reachable from the public
+#                    internet — only the BFF can talk to it over Render's
+#                    private network. This keeps /mcp off the public internet,
+#                    which the code does NOT otherwise gate behind auth.
+#   - lifeops-web  : PUBLIC web service. The Vite SPA build + the Express BFF
+#                    (/api/ask, /api/today, /api/health). Serves the built SPA
+#                    and proxies tool calls to lifeops-mcp over MCP.
+#
+# Why two services (not one): the repo already ships two independent Express
+# apps that communicate over Streamable HTTP via MCP_BASE_URL. Splitting them
+# matches the existing code exactly — no tool contracts or transport change —
+# and lets the MCP server stay private with its own persistent disk (single
+# SQLite writer). A single combined process would mean running two listeners
+# under one Render port, which the current code does not support.
+#
+# NOTE: Disks require a paid instance type (Free has no persistent disk). If you
+# must stay on Free, see SQLite notes in docs/render-deploy.md — data will be
+# EPHEMERAL and reset on every deploy/restart.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # MCP server — PRIVATE (internal-only). Owns the SQLite database.
+  # ---------------------------------------------------------------------------
+  - type: pserv
+    name: lifeops-mcp
+    runtime: node
+    region: oregon
+    plan: starter            # needed for the persistent disk below
+    # Install dev deps too (tsc is needed to build; --include=dev survives
+    # NODE_ENV=production). Then compile the server to dist/.
+    buildCommand: npm ci --include=dev && npm --workspace services/mcp-server run build
+    startCommand: npm --workspace services/mcp-server run start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"           # better-sqlite3 ships prebuilt binaries for Node 22
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "8000"         # fixed so the BFF can address it internally
+      - key: MCP_PATH
+        value: /mcp
+      - key: DEMO_MODE
+        value: "true"
+      - key: LOG_LEVEL
+        value: info
+      # Persistent SQLite lives on the mounted disk below.
+      - key: DATABASE_URL
+        value: file:/data/lifeops.db
+      # Shared secret between BFF and MCP (defense-in-depth on top of privacy).
+      - key: LIFEOPS_API_KEY
+        generateValue: true
+      # CORS allowlist for any DIRECT (non-BFF) MCP callers, e.g. Alexa+ later.
+      # Server-to-server calls from the BFF send no Origin and are allowed.
+      - key: ALLOWED_ORIGINS
+        value: ""
+    disk:
+      name: lifeops-data
+      mountPath: /data        # database.ts mkdirs the parent, so /data is fine
+      sizeGB: 1
+
+  # ---------------------------------------------------------------------------
+  # Web (SPA + BFF) — PUBLIC. No database of its own.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: lifeops-web
+    runtime: node
+    region: oregon           # MUST match the pserv region for private networking
+    plan: starter
+    buildCommand: npm ci --include=dev && npm --workspace apps/web run build
+    startCommand: npm --workspace apps/web run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically for web services; server/index.ts
+      # now binds process.env.PORT on 0.0.0.0.
+      - key: MCP_PATH
+        value: /mcp
+      # Internal address of the private MCP service (Render private DNS).
+      - key: MCP_BASE_URL
+        value: http://lifeops-mcp:8000
+      # Pull the SAME shared secret the MCP service generated.
+      - key: LIFEOPS_API_KEY
+        fromService:
+          type: pserv
+          name: lifeops-mcp
+          envVarKey: LIFEOPS_API_KEY
+      - key: DEMO_USER_ID
+        value: demo-user
+      # ----- Amazon Bedrock (OPTIONAL). Leave unset to run deterministic. -----
+      # These are secrets: set them in the Render dashboard, never in git.
+      - key: AWS_REGION
+        value: us-east-1
+      - key: BEDROCK_MODEL_ID
+        sync: false          # set in dashboard; empty = deterministic mode
+      - key: AWS_ACCESS_KEY_ID
+        sync: false          # prefer leaving empty; use an IAM role if available
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      # Agent guard rails — keep writes OFF by default.
+      - key: AGENT_ALLOW_WRITES
+        value: "false"
+      - key: AGENT_MAX_ITERATIONS
+        value: "5"
+      # ----- Public-API hardening (Phase 3.1) -----
+      # CORS allowlist for the PUBLIC web origin(s). Comma-separated, NO
+      # wildcard in production. Set to your custom domain once attached, e.g.
+      # https://lifeops.example.com . Leave empty until you know the domain —
+      # the SPA served by this same service is same-origin and needs no entry.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # Shared OPERATOR secret that enables WRITE routes (complete_task,
+      # create_reminder). Leave UNSET to keep the deployment read-only (writes
+      # return 403 — the safe public-beta default). This is NOT per-user auth.
+      - key: LIFEOPS_WRITE_TOKEN
+        sync: false
+      # Per-instance rate limit (optional; defaults 120 req / 60s).
+      - key: RATE_LIMIT_MAX
+        value: "120"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"

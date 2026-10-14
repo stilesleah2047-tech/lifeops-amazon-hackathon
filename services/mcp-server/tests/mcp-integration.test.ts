@@ -17,6 +17,12 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const PORT = 8766;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB = './data/lifeops.integration.db';
+// Spawn the REAL Node binary (process.execPath) and let it load `tsx` via
+// --import. process.execPath is a true executable (never a .cmd shim), so no
+// shell is needed. This avoids BOTH the DEP0190 shell:true warning AND the
+// Node 20.12+/24 `spawn EINVAL` that occurs when launching npx.cmd without a
+// shell. Cross-platform: identical on Windows, macOS, and Linux.
+const NODE = process.execPath;
 
 let child: ChildProcess;
 let client: Client;
@@ -49,8 +55,8 @@ beforeAll(async () => {
   }
 
   child = spawn(
-    'npx',
-    ['tsx', 'src/index.ts'],
+    NODE,
+    ['--import', 'tsx', 'src/index.ts'],
     {
       env: {
         ...process.env,
@@ -61,9 +67,6 @@ beforeAll(async () => {
         LOG_LEVEL: 'warn',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
-      // Windows: `npx` is `npx.cmd`; spawn() needs a shell to resolve it,
-      // otherwise it throws `spawn npx ENOENT`. Harmless on macOS/Linux.
-      shell: true,
     }
   );
   child.stderr?.on('data', (b) => process.stderr.write(`[srv] ${b}`));
@@ -73,9 +76,9 @@ beforeAll(async () => {
   // Seed inside the same DB the server sees.
   await new Promise<void>((resolve, reject) => {
     const seed = spawn(
-      'npx',
-      ['tsx', 'src/scripts/seed.ts'],
-      { env: { ...process.env, DATABASE_URL: `file:${DB}` }, stdio: 'inherit', shell: true }
+      NODE,
+      ['--import', 'tsx', 'src/scripts/seed.ts'],
+      { env: { ...process.env, DATABASE_URL: `file:${DB}` }, stdio: 'inherit' }
     );
     seed.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`seed exit ${code}`))));
   });

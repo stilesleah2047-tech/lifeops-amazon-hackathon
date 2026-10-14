@@ -489,6 +489,24 @@ function TodayView(p: TodayViewProps) {
   );
 }
 
+function modeLabel(mode: AskResponse['mode']): string {
+  switch (mode) {
+    case 'bedrock':
+      return 'AI: Amazon Bedrock';
+    case 'deterministic-meeting':
+      return 'Deterministic · meeting-aware';
+    case 'deterministic-fallback':
+      return 'Deterministic (Bedrock fallback)';
+    default:
+      return 'Deterministic';
+  }
+}
+
+/** Small, honest badge showing which engine produced the answer. */
+function ModeBadge({ mode }: { mode: AskResponse['mode'] }) {
+  return <span className="tag">{modeLabel(mode)}</span>;
+}
+
 function AskResult({ res }: { res: AskResponse }) {
   const r = res.result;
   if (r.kind === 'plan') {
@@ -499,6 +517,7 @@ function AskResult({ res }: { res: AskResponse }) {
             <Icon name="bolt" size={15} /> Plan ready
           </h2>
           <span className="tag">{r.plan.plan.generatedBy}</span>
+          <ModeBadge mode={res.mode} />
         </div>
         <div className="panel-body">
           <p className="plan-summary">{r.plan.plan.summary}</p>
@@ -546,6 +565,7 @@ function AskResult({ res }: { res: AskResponse }) {
       <section className="panel accent">
         <div className="panel-head">
           <h2>Summary</h2>
+          <ModeBadge mode={res.mode} />
         </div>
         <div className="panel-body">
           <p>{r.summary.summary}</p>
@@ -553,9 +573,106 @@ function AskResult({ res }: { res: AskResponse }) {
       </section>
     );
   }
+  if (r.kind === 'meeting') {
+    const rec = r.recommendation;
+    return (
+      <section className="panel accent">
+        <div className="panel-head">
+          <h2>
+            <Icon name="reminders" size={15} /> Before your meeting
+          </h2>
+          <ModeBadge mode={res.mode} />
+        </div>
+        <div className="panel-body">
+          <p className="plan-summary">{rec.summary}</p>
+          {rec.hasMeeting && rec.meeting && (
+            <p>
+              Next: <strong>{rec.meeting.title}</strong> at {formatClock(rec.meeting.startAt)}{' '}
+              — {rec.availableMinutes} min free.
+            </p>
+          )}
+          {rec.beforeMeeting.length > 0 && (
+            <div className="timeline">
+              {rec.beforeMeeting.map((t) => (
+                <div className="tl-row task" key={t.taskId}>
+                  <span className="tl-time">{t.estimatedMinutes}m</span>
+                  <span className="tl-title">{t.title}</span>
+                  <span className="tl-reason">{t.reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {rec.afterMeeting.length > 0 && (
+            <>
+              <p className="muted">After the meeting:</p>
+              <ul className="warnings">
+                {rec.afterMeeting.map((t) => (
+                  <li key={t.taskId}>
+                    {t.title} — {t.reason}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {rec.warnings.length > 0 && (
+            <ul className="warnings">
+              {rec.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+    );
+  }
+  if (r.kind === 'agent') {
+    return (
+      <section className="panel accent">
+        <div className="panel-head">
+          <h2>
+            <Icon name="bolt" size={15} /> Assistant
+          </h2>
+          <ModeBadge mode={res.mode} />
+        </div>
+        <div className="panel-body">
+          <p className="plan-summary">{r.text}</p>
+          {r.toolCalls.length > 0 && (
+            <ul className="warnings">
+              {r.toolCalls.map((c, i) => (
+                <li key={i}>
+                  {c.ok ? '✓' : '✗'} {c.name} — {c.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          {r.proposedActions.length > 0 && (
+            <>
+              <p className="muted">Awaiting your confirmation:</p>
+              <ul className="warnings">
+                {r.proposedActions.map((a, i) => (
+                  <li key={i}>
+                    {a.tool} — {a.reason}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="panel">
-      <div className="panel-body alert">{r.message}</div>
+      <div className="panel-head">
+        <h2>Note</h2>
+        <ModeBadge mode={res.mode} />
+      </div>
+      <div className="panel-body alert">
+        {r.message}
+        {res.mode === 'deterministic-fallback' && res.fallbackReason && (
+          <p className="muted">Bedrock was unavailable ({res.fallbackReason}); used the deterministic engine.</p>
+        )}
+      </div>
     </section>
   );
 }

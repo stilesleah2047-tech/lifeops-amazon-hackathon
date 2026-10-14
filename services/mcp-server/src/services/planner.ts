@@ -46,8 +46,12 @@ const isoOn = (date: string, hhmm: string): string => {
 const priorityWeight = (p: Task['priority']): number =>
   p === 'high' ? 100 : p === 'medium' ? 50 : 10;
 
-/** Score tasks by urgency: priority + overdue boost + short-fits-first. */
-const scoreTask = (t: Task, dateISO: string): number => {
+/**
+ * Score tasks by urgency: priority + overdue boost + short-fits-first.
+ * Exported so other deterministic planners (e.g. the meeting-aware recommender)
+ * order tasks identically — one source of truth for prioritisation.
+ */
+export const taskUrgencyScore = (t: Task, dateISO: string): number => {
   let s = priorityWeight(t.priority);
   if (t.dueDate) {
     if (t.dueDate < dateISO) s += 200; // overdue — front of the line
@@ -57,6 +61,9 @@ const scoreTask = (t: Task, dateISO: string): number => {
   if (t.estimatedMinutes <= 30) s += 5;
   return s;
 };
+
+/** @deprecated internal alias retained for readability within this module. */
+const scoreTask = taskUrgencyScore;
 
 /** Return sorted free intervals between events inside the window, in ms. */
 export function computeFreeIntervals(
