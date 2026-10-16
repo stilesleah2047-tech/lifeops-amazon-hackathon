@@ -352,7 +352,14 @@ function extractReminderTitle(text: string): string | null {
 const app = express();
 app.set('trust proxy', 1); // behind Render's proxy; makes req.ip meaningful
 // Configurable CORS allowlist (NOT authentication) — replaces open cors().
-app.use(cors(buildCorsOptions(ALLOWED_ORIGINS)));
+// IMPORTANT: scope CORS to the API surface ONLY. The SPA's own static assets
+// are served by THIS service, but the browser fetches them in CORS mode
+// because Vite emits <script type="module" crossorigin> / <link crossorigin>.
+// Applying the allowlist globally made the browser's same-origin asset fetch
+// fail the check (empty prod allowlist) and the origin callback threw →
+// 500 on /assets/* → blank page. The API stays guarded; same-origin static
+// assets must not be gated.
+app.use('/api', cors(buildCorsOptions(ALLOWED_ORIGINS)));
 app.use(express.json({ limit: '256kb' }));
 // Rate limit the whole public API surface (per instance).
 const apiRateLimiter = createRateLimiter({ windowMs: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX });
