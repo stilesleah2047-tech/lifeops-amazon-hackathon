@@ -182,6 +182,25 @@ describe('rate limiter', () => {
     mw(mockReq({ ip: 'b' }), mockRes(), next);
     expect(next).toHaveBeenCalledTimes(2); // different ips, each under max
   });
+
+  it('evicts expired entries so the map cannot grow unbounded (regression)', () => {
+    let t = 0;
+    const mw = createRateLimiter({ windowMs: 1000, max: 100, now: () => t });
+    const next = vi.fn() as unknown as NextFunction;
+
+    // 50 one-off clients within the first window.
+    for (let i = 0; i < 50; i++) {
+      mw(mockReq({ ip: `ip-${i}` }), mockRes(), next);
+    }
+    expect(mw.pending()).toBe(50);
+
+    // Advance past the window so all 50 entries are now stale, then make ONE
+    // request from a new client. The lazy sweep must drop the 50 expired
+    // entries, leaving only the single fresh one — not 51.
+    t += 1001;
+    mw(mockReq({ ip: 'fresh' }), mockRes(), next);
+    expect(mw.pending()).toBe(1);
+  });
 });
 
 // ---- validation ----

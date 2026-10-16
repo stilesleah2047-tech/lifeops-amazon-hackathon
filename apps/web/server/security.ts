@@ -127,16 +127,43 @@ export interface RateLimitOptions {
 }
 
 /**
+ * Rate-limiter middleware with a test/introspection hook.
+ * `pending()` reports how many client entries are currently retained — used by
+ * the regression test to prove expired entries are evicted (no unbounded
+ * memory growth).
+ */
+export type RateLimiter = ((req: Request, res: Response, next: NextFunction) => void) & {
+  pending(): number;
+};
+
+/**
  * Minimal dependency-free limiter. Per-instance only — adequate for the
  * single-instance public beta; swap for a shared store if you scale out.
+ *
+ * Memory bound: a naive Map keyed by client IP would grow without limit, since
+ * one-off IPs leave stale entries that are never revisited (only re-seen IPs
+ * get overwritten). To cap memory we lazily SWEEP expired entries at most once
+ * per window on an incoming request. This keeps the map proportional to the
+ * number of DISTINCT clients seen within a single window, not all-time.
  */
-export function createRateLimiter(opts: RateLimitOptions) {
+export function createRateLimiter(opts: RateLimitOptions): RateLimiter {
   const hits = new Map<string, { count: number; resetAt: number }>();
   const clock = opts.now ?? Date.now;
+  // Sweep no more than once per window to keep the amortized cost negligible.
+  let lastSweep = clock();
 
-  return (req: Request, res: Response, next: NextFunction): void => {
+  function sweepExpired(t: number): void {
+    for (const [key, entry] of hits) {
+      if (t >= entry.resetAt) hits.delete(key);
+    }
+    lastSweep = t;
+  }
+
+  const middleware = ((req: Request, res: Response, next: NextFunction): void => {
     const key = req.ip || req.socket.remoteAddress || 'unknown';
     const t = clock();
+    // Opportunistic cleanup: drop stale entries so the map can't grow forever.
+    if (t - lastSweep >= opts.windowMs) sweepExpired(t);
     const entry = hits.get(key);
     if (!entry || t >= entry.resetAt) {
       hits.set(key, { count: 1, resetAt: t + opts.windowMs });
@@ -150,7 +177,11 @@ export function createRateLimiter(opts: RateLimitOptions) {
       return;
     }
     next();
-  };
+  }) as RateLimiter;
+
+  // Non-enumerable so it never affects normal middleware usage.
+  middleware.pending = () => hits.size;
+  return middleware;
 }
 
 // --------------------------------------------------------------------------
