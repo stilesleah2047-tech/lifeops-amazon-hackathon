@@ -14,6 +14,9 @@ import {
   type DaySummary,
 } from './api';
 
+/** Result of a reminder-create attempt, surfaced to the Reminders view. */
+type ReminderCreateOutcome = { ok: boolean; message: string };
+
 /* -------------------------------------------------------------------------- */
 /* helpers + icons                                                             */
 /* -------------------------------------------------------------------------- */
@@ -180,6 +183,29 @@ export default function App() {
     [refresh]
   );
 
+  // Create a reminder via the dedicated validated write endpoint. Like task
+  // completion, this is a server-gated WRITE: with no operator token it is
+  // refused (403) and the view surfaces that honestly; with writes enabled it
+  // actually schedules the reminder and refreshes the snapshot.
+  const createReminder = useCallback(
+    async (input: { eventId?: string; leadMinutes?: number }): Promise<ReminderCreateOutcome> => {
+      if (running) return { ok: false, message: 'Busy — please wait a moment and try again.' };
+      setRunning(true);
+      setError(null);
+      try {
+        const res = await api.createReminder(input);
+        setActivity((prev) => [...res.activity, ...prev].slice(0, 40));
+        await refresh();
+        return { ok: true, message: res.result.message };
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : 'Failed to create reminder' };
+      } finally {
+        setRunning(false);
+      }
+    },
+    [running, refresh]
+  );
+
   const go = useCallback((v: ViewName) => {
     setView(v);
     setSidebarOpen(false);
@@ -291,7 +317,7 @@ export default function App() {
               reminders={reminders}
               events={events}
               running={running}
-              runAsk={runAsk}
+              createReminder={createReminder}
               defaultLead={settings.reminderLead}
             />
           ) : view === 'insights' ? (
@@ -816,35 +842,27 @@ function RemindersView({
   reminders,
   events,
   running,
-  runAsk,
+  createReminder,
   defaultLead,
 }: {
   reminders: Reminder[];
   events: CalendarEvent[];
   running: boolean;
-  runAsk: (s: string) => Promise<AskResponse | null>;
+  createReminder: (input: { eventId?: string; leadMinutes?: number }) => Promise<ReminderCreateOutcome>;
   defaultLead: number;
 }) {
   const [eventId, setEventId] = useState('');
   const [lead, setLead] = useState(defaultLead);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   async function create() {
-    const ev = events.find((e) => e.id === eventId) ?? events[0];
-    const anchor = ev ? ev.title : 'my next event';
-    // Phrase as an explicit CREATE so the BFF routes to the write path (not the
-    // read-only meeting planner) and returns its honest refusal when writes are
-    // disabled. Avoid "before <meeting>" wording so it is never reclassified as
-    // a meeting-planning question regardless of the event title.
-    const res = await runAsk(`Create a reminder for "${anchor}" with a ${lead} minute lead`);
-    if (!res) return;
-    if (res.result.kind === 'reminder') {
-      setNotice(null);
-    } else if (res.result.kind === 'error') {
-      setNotice(
-        'Writes are disabled on this demo \u2014 LifeOps refused to create the reminder. The agent never mutates your data without an authorized operator token.',
-      );
+    // Honor the user's actual event + lead-time selection. The server anchors
+    // the reminder to the chosen event (or the next upcoming one) and computes
+    // the fire time as (event start - lead minutes).
+    const res = await createReminder({ eventId: eventId || undefined, leadMinutes: lead });
+    if (res.ok) {
+      setNotice({ ok: true, text: res.message });
     } else {
-      setNotice('Writes are disabled on this demo \u2014 reminders cannot be created in read-only mode.');
+      setNotice({ ok: false, text: res.message });
     }
   }
   return (
@@ -881,7 +899,7 @@ function RemindersView({
         </div>
         {notice && (
           <div className="panel-body">
-            <div className="alert">{notice}</div>
+            <div className="alert">{notice.ok ? `\u2713 ${notice.text}` : notice.text}</div>
           </div>
         )}
       </section>
