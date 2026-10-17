@@ -193,4 +193,21 @@ export const api = {
       { method: 'POST', headers: writeAuthHeaders, body: JSON.stringify({ userId }) }
     );
   },
+  // Create a reminder anchored to a calendar event. WRITE route: server-gated
+  // by the same shared operator token as completeTask. `eventId` is optional —
+  // the server falls back to the next upcoming event when omitted. `remindAt`
+  // is computed server-side as (event start - leadMinutes).
+  createReminder(
+    input: { eventId?: string; leadMinutes?: number; title?: string },
+    userId = 'demo-user'
+  ) {
+    return json<{
+      result: { reminder: Reminder; status: string; scheduledFor: string; message: string };
+      activity: ActivityEntry[];
+    }>('/api/reminders', {
+      method: 'POST',
+      headers: writeAuthHeaders,
+      body: JSON.stringify({ ...input, userId }),
+    });
+  },
 };
