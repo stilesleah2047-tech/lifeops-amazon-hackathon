@@ -145,9 +145,9 @@ export default function App() {
   }, [refresh]);
 
   const runAsk = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<AskResponse | null> => {
       const q = text.trim();
-      if (!q || running) return;
+      if (!q || running) return null;
       setRunning(true);
       setError(null);
       try {
@@ -155,8 +155,10 @@ export default function App() {
         setLastAsk(res);
         setActivity((prev) => [...res.activity, ...prev].slice(0, 40));
         await refresh();
+        return res;
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Request failed');
+        return null;
       } finally {
         setRunning(false);
       }
@@ -820,15 +822,30 @@ function RemindersView({
   reminders: Reminder[];
   events: CalendarEvent[];
   running: boolean;
-  runAsk: (s: string) => void;
+  runAsk: (s: string) => Promise<AskResponse | null>;
   defaultLead: number;
 }) {
   const [eventId, setEventId] = useState('');
   const [lead, setLead] = useState(defaultLead);
-  function create() {
+  const [notice, setNotice] = useState<string | null>(null);
+  async function create() {
     const ev = events.find((e) => e.id === eventId) ?? events[0];
-    const target = ev ? `my \u201c${ev.title}\u201d meeting` : 'my next meeting';
-    runAsk(`Remind me ${lead} minutes before ${target}`);
+    const anchor = ev ? ev.title : 'my next event';
+    // Phrase as an explicit CREATE so the BFF routes to the write path (not the
+    // read-only meeting planner) and returns its honest refusal when writes are
+    // disabled. Avoid "before <meeting>" wording so it is never reclassified as
+    // a meeting-planning question regardless of the event title.
+    const res = await runAsk(`Create a reminder for "${anchor}" with a ${lead} minute lead`);
+    if (!res) return;
+    if (res.result.kind === 'reminder') {
+      setNotice(null);
+    } else if (res.result.kind === 'error') {
+      setNotice(
+        'Writes are disabled on this demo \u2014 LifeOps refused to create the reminder. The agent never mutates your data without an authorized operator token.',
+      );
+    } else {
+      setNotice('Writes are disabled on this demo \u2014 reminders cannot be created in read-only mode.');
+    }
   }
   return (
     <>
@@ -862,6 +879,11 @@ function RemindersView({
             <Icon name="plus" size={14} /> Set reminder
           </button>
         </div>
+        {notice && (
+          <div className="panel-body">
+            <div className="alert">{notice}</div>
+          </div>
+        )}
       </section>
       <section className="panel">
         <div className="panel-head">
