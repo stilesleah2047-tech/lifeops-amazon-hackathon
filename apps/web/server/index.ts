@@ -495,6 +495,57 @@ app.post(
   })
 );
 
+// Direct reminder creation for the UI's "Set reminder" button. This MUTATES
+// user data, so — exactly like task completion — it is gated by the write-
+// authorization middleware: no token configured => 403 (never anonymous);
+// token configured => requires a valid `Authorization: Bearer <token>`.
+//
+// Unlike the natural-language /api/ask reminder branch, this endpoint honors
+// the user's explicit event + lead-time selection from the form. The reminder
+// fire time is computed server-side as (chosen event start - leadMinutes); the
+// title/anchor are validated here, never trusted blindly from the client.
+app.post(
+  '/api/reminders',
+  requireWriteAuth(WRITE_TOKEN),
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const userId =
+      (typeof body.userId === 'string' && body.userId.trim()) || DEMO_USER;
+    const eventId = typeof body.eventId === 'string' ? body.eventId.trim() : '';
+    const leadRaw = Number(body.leadMinutes);
+    const leadMinutes =
+      Number.isFinite(leadRaw) && leadRaw > 0 && leadRaw <= 24 * 60
+        ? Math.floor(leadRaw)
+        : 30;
+    const rawTitle = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : '';
+
+    const activity: ActivityEntry[] = [];
+    const schedule = await callTool<{ events: CalendarEvent[] }>(
+      'get_schedule',
+      { userId },
+      activity,
+    );
+    const events = schedule.events ?? [];
+    const now = Date.now();
+    // Prefer the explicitly selected event; else the next upcoming one.
+    const chosen =
+      (eventId ? events.find((e) => e.id === eventId) : undefined) ??
+      events.find((e) => Date.parse(e.startAt) > now);
+    if (!chosen) {
+      res.status(400).json({ error: 'No upcoming calendar event available to anchor the reminder.' });
+      return;
+    }
+    const title = rawTitle || `Prepare for ${chosen.title}`;
+    const reminderTime = new Date(Date.parse(chosen.startAt) - leadMinutes * 60_000).toISOString();
+    const result = await callTool(
+      'create_reminder',
+      { userId, title, reminderTime, relatedEventId: chosen.id },
+      activity,
+    );
+    res.json({ result, activity });
+  })
+);
+
 // ---------- Serve the built SPA in production ----------
 // In dev, Vite serves the SPA and proxies /api → this BFF. In a deployed
 // (single public service) setup there is no Vite, so the BFF serves the
